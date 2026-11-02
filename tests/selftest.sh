@@ -90,7 +90,9 @@ curl -s $B/robots.txt | grep -q 'Disallow: /'      && ok "robots-disallow"      
   && ok "prefix-noauth-200-gate-no-site-bytes" || bad "prefix-noauth-200-gate-no-site-bytes"
 [ "$(code $B/fest40/_assets/dummy.txt)" = "404" ] && ok "prefix-noauth-asset->404" || bad "prefix-noauth-asset->404"
 LOC=$(curl -s -D - -o /dev/null -X POST -d "password=$PW" $B/fest40/login | tr -d '\r' | grep -i '^location:' | sed 's/.*: //')
-[ "$LOC" = "/fest40/" ]                            && ok "prefix-login-redirect"      || bad "prefix-login-redirect"
+[ "$LOC" = "/fest40/" ]                            && ok "prefix-login-redirect"     || bad "prefix-login-redirect"
+curl -s $B/fest40/ | grep -q 'action="/fest40/login"'  && ok "emit-action-prefixed"     || bad "emit-action-prefixed"
+curl -s $B/ | grep -q 'action="/fest40/login"'         && ok "emit-action-bare"         || bad "emit-action-bare"
 # rotate: old pw must die, new pw must work
 [ "$(code -X POST -d "password=$PW2" -H "Cookie: session=$SC" $B/rotate)" = "200" ] && ok "rotate->200" || bad "rotate->200"
 [ "$(code -X POST -d "password=$PW" $B/login)" = "401" ] && ok "rotate-oldpw->401" || bad "rotate-oldpw->401"

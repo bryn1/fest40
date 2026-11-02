@@ -2,8 +2,11 @@
 
 Password-gated host for the owner's 40-year party page. Public URL:
 `https://sibbamala.com/fest40/` (vm106 reconciler auto-hosts this public repo;
-nginx proxies the service under the `/fest40/` prefix — `server.py` answers
-both prefixed and bare paths).
+nginx proxies the service under the `/fest40/` prefix with a trailing-slash
+`proxy_pass`, so requests reach `server.py` BARE — it answers bare and prefixed
+paths but EMITS only prefix-absolute URLs (`/fest40/login`, redirect `/fest40/`):
+a relative form action would post to the host root, the portfolio app. Fleet
+convention — hotell ships the same absolute `/hotell/` refs).
 
 ## What it is
 

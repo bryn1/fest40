@@ -345,6 +345,26 @@ def test_rotate_without_cookie_401(srv):
 
 # -- prefix safety ----------------------------------------------------------
 
+def test_emitted_urls_are_prefix_absolute(srv):
+    """Browser contract (round-4 fix): nginx's trailing-slash proxy_pass strips
+    the mount, so the gate HTML must EMIT /fest40/... actions even when the
+    request path arrives bare -- else the browser posts to the portfolio root.
+    curl never caught this; a browser follows form actions."""
+    port = srv.server_address[1]
+    st, _, body = get(port, "/")                          # bare: setup page
+    assert st == 200 and b'action="/fest40/register"' in body
+    st, _, body = get(port, "/fest40/")
+    assert st == 200 and b'action="/fest40/register"' in body
+    register(port)                                         # now configured
+    st, _, body = get(port, "/")                          # bare: login page
+    assert st == 200 and b'action="/fest40/login"' in body
+    # login from EITHER shape redirects into the mount, never to "/"
+    st, hdrs, _ = login(port, PW, path="/login")
+    assert st == 302 and hdrs.get("Location") == "/fest40/"
+    st, hdrs, _ = login(port, PW, path="/fest40/login")
+    assert st == 302 and hdrs.get("Location") == "/fest40/"
+
+
 def test_prefix_both_ways(srv):
     port, cookie = _seeded(srv)
     st, hdrs, body = get(port, "/fest40/", cookie)

@@ -2,26 +2,25 @@
 """fest40 — password-gated host for the owner's party page (MC 10286.22).
 
 Stdlib-only http.server service deployed by the vm106 reconciler (public-repo
-auto-host lane). nginx proxies it under /fest40/, so every route answers BOTH
-/fest40/... and bare /... paths. Binds 0.0.0.0:$PORT (no fallback).
+auto-host lane). nginx proxies it under /fest40/ with a TRAILING-SLASH
+proxy_pass, so requests arrive BARE (both shapes are answered) and every
+EMITTED url is prefix-absolute. Binds 0.0.0.0:$PORT (no fallback).
 
-State lives OUTSIDE git in the service's own state dir. Per the systemd unit
-contract the unit sets HOME=%S/vm106-app-fest40 (a writable StateDirectory)
-and NEVER sets $XDG_STATE_HOME; so state_base() = $HOME/fest40-state, with a
-./state/ fallback only when HOME is unset/unwritable (local tests), and a
-fail-fast exit when neither is writable (never write blind). Layout: site/
+State lives OUTSIDE git in the service's own state dir. The unit sets
+HOME=%S/vm106-app-fest40 (writable StateDirectory) and NEVER sets
+$XDG_STATE_HOME, so state_base() = $HOME/fest40-state; ./state/ is a local
+fallback and neither-writable exits fast (never write blind). Layout: site/
 (served content, enters ONLY via POST /seed, never committed), password.hash
 (scrypt), secret.key (0600 HMAC secret, made on first boot).
 
-Gate is fail-closed: GET / always answers 200 with a gate page (setup form
-while unconfigured, then the login form) carrying zero site bytes -- the probe
-contract, slakttraff precedent; POST login/seed/rotate answer 503 while
-unconfigured; one register window (20 min from process start, only while
-unconfigured) sets the password. Every site byte requires a valid HMAC session
-cookie (30 d, HttpOnly Lax); unauthenticated GET elsewhere 404s, never 401 --
-no path inventory for the quarantine probe. noindex,nosnippet + robots.txt
-Disallow everywhere. Limits: the register window is open at first boot until
-configured; the hash lives in the host state dir (POST /rotate); admin =
+Gate is fail-closed: GET / answers 200 with a gate page (setup form while
+unconfigured, else the login form) carrying zero site bytes -- the probe
+contract; POST login/seed/rotate 503 while unconfigured; a register window
+(20 min from start, only while unconfigured) sets the password. Site bytes
+need a valid HMAC cookie (30 d, HttpOnly Lax); unauthenticated GET elsewhere
+404s, never 401 -- no path inventory for the quarantine probe. Always
+noindex,nosnippet + robots Disallow. Limits: window open at first boot until
+configured; hash lives in the host state dir (POST /rotate); admin =
 anyone-with-the-password. Anti-casual, NOT a vault.
 """
 import hashlib
@@ -36,7 +35,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
-
 from gate_pages import LOGIN_PAGE, SETUP_PAGE, render
 
 PREFIX = "/fest40"
@@ -54,10 +52,9 @@ ROBOTS_TXT = "User-agent: *\nDisallow: /\n"
 
 
 def state_base() -> Path:
-    """Service state dir per the vm106 unit contract: $HOME/fest40-state (the
-    unit sets HOME=%S/vm106-app-fest40, a writable StateDirectory, and never
-    $XDG_STATE_HOME). ./state/ is the fallback only for local runs. Fail fast
-    when neither is writable: never write blind into the strict mirror."""
+    """State dir per the unit contract: $HOME/fest40-state (the unit sets
+    HOME=%S/vm106-app-fest40, a writable StateDirectory, never $XDG_STATE_HOME).
+    ./state/ falls back for local runs only; fail fast if neither is writable."""
     cands = []
     home = os.environ.get("HOME")
     if home:
@@ -142,8 +139,12 @@ def strip_prefix(path: str) -> str:
     return path
 
 
-def app_base(path: str) -> str:
-    return PREFIX if path.startswith(PREFIX) else ""
+def app_base(path: str = "") -> str:
+    """EMITTED urls are ALWAYS prefix-absolute: nginx's trailing-slash
+    `proxy_pass .../<port>/;` (render-apps.py:407) STRIPS the mount, so a
+    relative action would post to the HOST root -- the portfolio app. Fleet
+    convention (hotell): the app declares its own mount."""
+    return PREFIX
 
 
 def safe_rel(rel: str):
@@ -211,8 +212,8 @@ class Handler(BaseHTTPRequestHandler):
                 return True
         return False
 
-    def _pw_form(self, base, status=HTTPStatus.UNAUTHORIZED):
-        self._send(status, render(LOGIN_PAGE, base), "text/html; charset=utf-8")
+    def _pw_form(self, status=HTTPStatus.UNAUTHORIZED):
+        self._send(status, render(LOGIN_PAGE, app_base()), "text/html; charset=utf-8")
 
     # -- routes -----------------------------------------------------------
     def do_GET(self):
@@ -220,25 +221,24 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/robots.txt" or raw == PREFIX + "/robots.txt":
             self._send(200, ROBOTS_TXT, "text/plain; charset=utf-8")
             return
-        path, base = strip_prefix(raw), app_base(raw)
+        path = strip_prefix(raw)
         if path == "/":
-            # The gate page answers 200 ALWAYS (probes demand 200 + a sized
-            # body on the product path, slakttraff precedent) -- but it
-            # carries ZERO site bytes; those need the cookie.
+            # The gate page answers 200 ALWAYS (probes demand a 200 + sized
+            # product path) but carries ZERO site bytes -- those need the cookie.
             if read_password(state_base()) is None:
-                self._send(200, render(SETUP_PAGE, base), "text/html; charset=utf-8")
+                self._send(200, render(SETUP_PAGE, app_base()), "text/html; charset=utf-8")
             elif not self._session_ok():
-                self._pw_form(base, status=HTTPStatus.OK)
+                self._pw_form(status=HTTPStatus.OK)
             else:
                 self._serve_site_index()
             return
         if path == "/register" and self._register_open():
             # same bytes as the unconfigured gate page -- form bootstrap only
-            self._send(200, render(SETUP_PAGE, base), "text/html; charset=utf-8")
+            self._send(200, render(SETUP_PAGE, app_base()), "text/html; charset=utf-8")
             return
         if not self._session_ok():
-            # 404 not 401: a 401 here is REACHABLE to the quarantine probe,
-            # and discloses the path (staging.py forbid_path_verdict).
+            # 404 not 401: a 401 here reads as REACHABLE to the quarantine
+            # probe (staging.py forbid_path_verdict) and discloses the path.
             self._send(HTTPStatus.NOT_FOUND, "not found\n")
             return
         if path == "/index.html":
@@ -253,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         raw = urlparse(self.path).path
-        path, base = strip_prefix(raw), app_base(raw)
+        path = strip_prefix(raw)
         body = self._body(MAX_BODY)
         if body == "TOOBIG":
             self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large\n")
@@ -276,13 +276,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not verify_password(self._form_pw(body) or "", read_password(state_base())):
                 time.sleep(0.5)  # cheap brute-force pace, fail closed
-                self._pw_form(base)
+                self._pw_form()
                 return
             exp = int(time.time()) + SESSION_TTL_S
             tok = make_token(get_secret(state_base()), exp)
             self._send(HTTPStatus.FOUND, b"", extra_headers=[
                 ("Set-Cookie", f"session={tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_S}"),
-                ("Location", base + "/"),
+                ("Location", app_base() + "/"),
             ])
             return
         # everything past here is admin: session required, fail closed
