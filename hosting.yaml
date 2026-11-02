@@ -1,0 +1,11 @@
+{
+  "_comment": ["vm106 hosting config -- strict JSON, no yaml. MC 10286.22.",
+               "Password-gated host for the owner's party page. CODE ONLY repo:",
+               "site content enters via POST /seed into the host state dir, never git."],
+  "name": "fest40",
+  "title": "fest40",
+  "type": "service",
+  "root": "apps/fest40",
+  "exec": "server.py",
+  "port": 8121
+}
