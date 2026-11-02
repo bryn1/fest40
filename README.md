@@ -30,10 +30,13 @@ A stdlib-only Python service (`server.py`, binds `0.0.0.0:$PORT`):
 ## State (NOT in git — never commit content)
 
 Site data lives in the service's own state dir, OUTSIDE the repo, and
-survives redeploys: base = `$XDG_STATE_HOME` (the systemd `StateDirectory`,
-`HOME=%S/vm106-app-fest40`), fallback `./state/`. Layout: `site/` (served
-content), `password.hash` (scrypt), `secret.key` (0600, generated on first
-boot). The repo is CODE ONLY — wedding bytes never enter git.
+survives redeploys. Base = `$HOME/fest40-state`, because the rendered unit
+sets `Environment=HOME=%S/vm106-app-fest40` (its `StateDirectory`, writable)
+and never sets `$XDG_STATE_HOME`. `./state/` is the fallback only when HOME
+is unset or unwritable (plain local runs); if neither is writable the
+service exits with a clear error instead of writing blind. Layout: `site/`
+(served content), `password.hash` (scrypt), `secret.key` (0600, generated on
+first boot). The repo is CODE ONLY — wedding bytes never enter git.
 
 ## Admin
 

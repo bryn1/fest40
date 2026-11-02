@@ -18,9 +18,10 @@ else
 fi
 
 # ---- leg 2: live server + curl gate battery ----------------------------------
-STATE=$(mktemp -d)
+STATE=$(mktemp -d); mkdir -p "$STATE/home"
 PORT=$((20000 + RANDOM % 10000))
-XDG_STATE_HOME="$STATE" PORT="$PORT" "$PY" server.py >/tmp/fest40-selftest-srv.log 2>&1 &
+# HOME exactly as the systemd unit sets it (Environment=HOME=%S/vm106-app-fest40)
+env -u XDG_STATE_HOME HOME="$STATE/home" PORT="$PORT" "$PY" server.py >/tmp/fest40-selftest-srv.log 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$STATE"' EXIT
 for _ in $(seq 50); do
@@ -60,7 +61,7 @@ with zipfile.ZipFile(buf, "w") as z:
 open(sys.argv[1], "wb").write(buf.getvalue())
 EOF
 [ "$(code -X POST --data-binary @$EVIL -H "Cookie: session=$SC" $B/seed)" = "400" ] && ok "seed-zipslip->400" || bad "seed-zipslip->400"
-[ ! -e "$(dirname "$STATE")/evil.txt" ]            && ok "zipslip-no-write"           || bad "zipslip-no-write"
+[ ! -e "$STATE/home/evil.txt" ]                    && ok "zipslip-no-write"           || bad "zipslip-no-write"
 [ "$(code -X POST --data-binary @$Z -H "Cookie: session=$SC" $B/seed)" = "200" ] && ok "seed-cookie->200" || bad "seed-cookie->200"
 BODY=$(curl -s -H "Cookie: session=$SC" $B/)
 echo "$BODY" | grep -q "dummy party"               && ok "served-index-content"       || bad "served-index-content"

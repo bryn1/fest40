@@ -5,8 +5,11 @@ Stdlib-only http.server service deployed by the vm106 reconciler (public-repo
 auto-host lane). nginx proxies it under /fest40/, so every route answers BOTH
 /fest40/... and bare /... paths. Binds 0.0.0.0:$PORT (no fallback).
 
-State lives OUTSIDE git in the service's own state dir (base =
-$XDG_STATE_HOME from the systemd StateDirectory, else ./state/): site/
+State lives OUTSIDE git in the service's own state dir. Per the systemd unit
+contract the unit sets HOME=%S/vm106-app-fest40 (a writable StateDirectory)
+and NEVER sets $XDG_STATE_HOME; so state_base() = $HOME/fest40-state, with a
+./state/ fallback only when HOME is unset/unwritable (local tests), and a
+fail-fast exit when neither is writable (never write blind). Layout: site/
 (served content, enters ONLY via POST /seed, never committed), password.hash
 (scrypt), secret.key (0600 HMAC secret, made on first boot).
 
@@ -55,11 +58,26 @@ ROBOTS_TXT = "User-agent: *\nDisallow: /\n"
 
 
 def state_base() -> Path:
-    """Service state dir: systemd StateDirectory ($XDG_STATE_HOME) else ./state/."""
-    base = os.environ.get("XDG_STATE_HOME")
-    p = Path(base) if base else Path.cwd() / "state"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    """Service state dir per the vm106 unit contract: $HOME/fest40-state
+    (the unit sets HOME=%S/vm106-app-fest40, a writable StateDirectory, and
+    NEVER sets $XDG_STATE_HOME). Fallback ./state/ only when HOME is
+    unset/unwritable (local runs). Fail fast when neither is writable --
+    never write blind (MC 10286.22: the first deploy died Errno 30 writing
+    into the read-only mirror, because this read only $XDG_STATE_HOME)."""
+    cands = []
+    home = os.environ.get("HOME")
+    if home:
+        cands.append(Path(home, "fest40-state"))
+    cands.append(Path.cwd() / "state")
+    for cand in cands:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            if os.access(cand, os.W_OK):
+                return cand
+        except OSError:
+            continue
+    raise SystemExit("fest40: FATAL no writable state dir "
+                     f"(tried {', '.join(str(c) for c in cands)}) -- refusing to start")
 
 
 def hash_password(pw: str) -> str:

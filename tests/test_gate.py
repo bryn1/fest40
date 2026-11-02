@@ -25,8 +25,12 @@ PW2 = "nyckel-laren-2026-test"
 
 @pytest.fixture()
 def srv(tmp_path, monkeypatch):
-    """Live server on an ephemeral port with an isolated state dir."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    """Live server on an ephemeral port, HOME set to a fresh dir exactly as
+    the systemd unit does (HOME=%S/vm106-app-fest40) -- so the deployed
+    state path ($HOME/fest40-state) is the path the tests exercise."""
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     monkeypatch.setattr(server, "START_TIME", time.time())
     server.get_secret(server.state_base())   # what main() does at boot
     httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -34,6 +38,10 @@ def srv(tmp_path, monkeypatch):
     t.start()
     yield httpd
     httpd.shutdown()
+
+
+def state_of(tmp_path):
+    return tmp_path / "home" / "fest40-state"
 
 
 def req(port, method, path, body=None, headers=None):
@@ -100,7 +108,7 @@ def test_register_then_configured(srv, tmp_path):
     port = srv.server_address[1]
     st, _, _ = register(port)
     assert st == 200
-    assert (tmp_path / "password.hash").is_file()
+    assert (state_of(tmp_path) / "password.hash").is_file()
     # configured now: / is a 401 login form, not 503, and NOT the site
     st, hdrs, body = get(port, "/")
     assert st == 401
@@ -157,7 +165,7 @@ def test_cookie_tamper_401(srv):
 def test_cookie_expired_401(srv, tmp_path):
     port = srv.server_address[1]
     assert register(port)[0] == 200
-    secret = bytes.fromhex((tmp_path / "secret.key").read_text().strip())
+    secret = bytes.fromhex((state_of(tmp_path) / "secret.key").read_text().strip())
     stale = server.make_token(secret, int(time.time()) - 10)
     st, _, _ = get(port, "/", "session=" + stale)
     assert st == 401
@@ -195,7 +203,8 @@ def test_seed_zipslip_rejected(srv, tmp_path):
     st, _, _ = req(port, "POST", "/seed", body=evil,
                    headers={"Content-Type": "application/zip", "Cookie": cookie})
     assert st == 400
-    assert not (tmp_path.parent / "evil.txt").exists()
+    assert not (tmp_path / "home" / "evil.txt").exists()      # ../ from the state dir
+    assert not (state_of(tmp_path) / "evil.txt").exists()
     assert not (tmp_path / "evil.txt").exists()
 
 
@@ -302,11 +311,14 @@ def test_prefix_both_ways(srv):
 
 # -- port from env (real subprocess, real bind) ------------------------------
 
-def test_port_env_bind():
+def test_port_env_bind(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         free = s.getsockname()[1]
-    env = dict(os.environ, PORT=str(free))
+    env = dict(os.environ, PORT=str(free), HOME=str(home))
+    env.pop("XDG_STATE_HOME", None)
     proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent.parent
                                                    / "server.py")],
                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -323,6 +335,45 @@ def test_port_env_bind():
         st, hdrs, _ = req(free, "GET", "/robots.txt")
         assert st == 200
         assert hdrs.get("X-Robots-Tag") == "noindex,nosnippet"
+        # booted on the unit's state contract: state under $HOME, secret made
+        assert (home / "fest40-state" / "secret.key").is_file()
     finally:
         proc.terminate()
         proc.wait(timeout=5)
+
+
+# -- state-dir contract (MC 10286.22 fix: HOME, not XDG_STATE_HOME) ----------
+
+def test_home_based_state_resolution(tmp_path, monkeypatch):
+    """HOME writable -> state lands under $HOME/fest40-state, cwd untouched
+    (the deploy died before this fix by falling back into the read-only mirror)."""
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    home.mkdir(); cwd.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.chdir(cwd)
+    base = server.state_base()
+    assert base == home / "fest40-state"
+    assert base.is_dir() and os.access(base, os.W_OK)
+    assert not (cwd / "state").exists()          # cwd NEVER touched when HOME works
+    server.write_password(base, PW)              # real write lands under HOME
+    assert (base / "password.hash").is_file()
+    assert not any(cwd.iterdir())                # cwd completely untouched
+
+
+def test_fail_fast_when_unwritable(tmp_path):
+    """HOME and cwd both unwritable -> immediate non-zero exit, clear stderr,
+    never a silent fallback and never a crash-loop after bind."""
+    ro_home, ro_cwd = tmp_path / "ro-home", tmp_path / "ro-cwd"
+    ro_home.mkdir(); ro_cwd.mkdir()
+    os.chmod(ro_home, 0o555); os.chmod(ro_cwd, 0o555)
+    try:
+        env = dict(os.environ, HOME=str(ro_home), PORT="0")
+        env.pop("XDG_STATE_HOME", None)
+        proc = subprocess.run([sys.executable,
+                               str(Path(__file__).resolve().parent.parent / "server.py")],
+                              env=env, cwd=str(ro_cwd), capture_output=True, timeout=10)
+        assert proc.returncode != 0
+        assert b"FATAL no writable state dir" in proc.stderr
+    finally:
+        os.chmod(ro_home, 0o755); os.chmod(ro_cwd, 0o755)
