@@ -38,7 +38,12 @@ nbytes() { curl -s "$@" | wc -c | tr -d ' '; }
 [ "$(code $B/)" = "200" ]                            && ok "unconfigured-/->200"        || bad "unconfigured-/->200"
 curl -s $B/ | grep -q "under upps"                  && ok "unconfigured-/->setup-page" || bad "unconfigured-/->setup-page"
 [ "$(nbytes $B/)" -ge 256 ]                          && ok "setup-page-over-floor"      || bad "setup-page-over-floor"
-[ "$(code $B/_assets/x)" = "401" ]                   && ok "unconfigured-asset->401"    || bad "unconfigured-asset->401"
+[ "$(code $B/_assets/x)" = "404" ]                   && ok "unconfigured-asset->404"    || bad "unconfigured-asset->404"
+QF=0
+for q in /hosting.yaml /tests/test_gate.py /fest40/hosting.yaml /fest40/server.py; do
+  [ "$(code $B$q)" = "404" ] || QF=1
+done
+[ "$QF" = "0" ]                                    && ok "quarantine-paths->404"      || bad "quarantine-paths->404"
 [ "$(code -X POST -d "password=$PW" $B/register)" = "200" ] && ok "register->200"     || bad "register->200"
 [ "$(code -X POST -d "password=$PW" $B/register)" = "409" ] && ok "register-again->409" || bad "register-again->409"
 [ "$(code $B/)" = "200" ]                            && ok "configured-/->200"          || bad "configured-/->200"
@@ -48,7 +53,7 @@ curl -s $B/ | grep -q "Lösenord"                    && ok "configured-/->login-
 SC=$(curl -s -D - -o /dev/null -X POST -d "password=$PW" $B/login | tr -d '\r' | grep -i '^set-cookie:' | sed 's/.*session=//;s/;.*//')
 [ -n "$SC" ]                                       && ok "login-right->set-cookie"    || bad "login-right->set-cookie"
 TAMPER="session=$(echo "$SC" | sed 's/.$/X/')"
-[ "$(code -H "Cookie: $TAMPER" $B/_assets/whatever.txt)" = "401" ] && ok "cookie-tamper-asset->401" || bad "cookie-tamper-asset->401"
+[ "$(code -H "Cookie: $TAMPER" $B/_assets/whatever.txt)" = "404" ] && ok "cookie-tamper-asset->404" || bad "cookie-tamper-asset->404"
 [ "$(code -X POST --data-binary @/dev/null $B/seed)" = "401" ] && ok "seed-nocookie->401" || bad "seed-nocookie->401"
 
 Z="$STATE/dummy.zip"
@@ -83,7 +88,7 @@ curl -s $B/robots.txt | grep -q 'Disallow: /'      && ok "robots-disallow"      
 [ "$(code -H "Cookie: session=$SC" $B/fest40/)" = "200" ] && ok "prefix-index->200" || bad "prefix-index->200"
 [ "$(code $B/fest40/)" = "200" ] && [ "$(curl -s $B/fest40/ | grep -c "$MARKER")" = "0" ] \
   && ok "prefix-noauth-200-gate-no-site-bytes" || bad "prefix-noauth-200-gate-no-site-bytes"
-[ "$(code $B/fest40/_assets/dummy.txt)" = "401" ] && ok "prefix-noauth-asset->401" || bad "prefix-noauth-asset->401"
+[ "$(code $B/fest40/_assets/dummy.txt)" = "404" ] && ok "prefix-noauth-asset->404" || bad "prefix-noauth-asset->404"
 LOC=$(curl -s -D - -o /dev/null -X POST -d "password=$PW" $B/fest40/login | tr -d '\r' | grep -i '^location:' | sed 's/.*: //')
 [ "$LOC" = "/fest40/" ]                            && ok "prefix-login-redirect"      || bad "prefix-login-redirect"
 # rotate: old pw must die, new pw must work

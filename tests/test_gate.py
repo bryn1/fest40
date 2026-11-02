@@ -105,9 +105,29 @@ def test_unconfigured_root_200_setup_page(srv):
     assert hdrs.get("X-Robots-Tag") == "noindex,nosnippet"
 
 
-def test_unconfigured_asset_401(srv):
+def test_unconfigured_asset_404(srv):
     st, _, _ = get(srv.server_address[1], "/_assets/whatever.txt")
-    assert st == 401   # no cookie, no byte -- the /-only 200 exception is exact
+    assert st == 404   # unauthenticated = indistinguishable from absent (no 401)
+
+
+# -- quarantine probe contract (staging.py forbid_path_verdict) ---------------
+
+def test_quarantined_repo_paths_are_404(srv):
+    """Every repo file with a LEAKY_SUFFIX must probe 404 while unauthenticated:
+    a 401 counts as REACHABLE (existence disclosed) to the staging gate. All
+    404 bodies are byte-identical, so no path inventory leaks. Bare AND under
+    the prefix, plus the gate's own same-extension control shape."""
+    port = srv.server_address[1]
+    bodies = set()
+    for p in ["/hosting.yaml", "/server.py", "/gate_pages.py", "/tests/test_gate.py",
+              "/tests/selftest.sh", "/fest40/hosting.yaml", "/fest40/tests/test_gate.py",
+              "/__negctl_123_456__.yaml"]:
+        st, _, body = get(port, p)
+        assert st == 404, f"{p} -> {st} (401 or 2xx would disclose existence)"
+        bodies.add(body)
+    assert len(bodies) == 1          # every 404 identical: zero path signal
+    # POST semantics stay 401 (the probes never POST)
+    assert req(port, "POST", "/seed", body=b"x")[0] == 401
 
 
 def test_gate_pages_clear_the_real_size_floor():
@@ -179,14 +199,14 @@ def test_login_right_pw_sets_cookie(srv):
 
 
 def test_cookie_tamper_no_site_bytes(srv):
-    """A tampered cookie opens NOTHING: /_assets -> 401, / -> 200 gate page
-    without a single site byte (the marker)."""
+    """A tampered cookie opens NOTHING: /_assets -> 404 (never 401, which
+    would disclose the path), / -> 200 gate page without a site byte."""
     port, cookie = _seeded(srv)
     sig, _, last = cookie.rpartition(".")
     tampered = cookie[:-1] + ("0" if cookie[-1] != "0" else "1")
     assert tampered != cookie
     st, _, _ = get(port, "/_assets/dummy.txt", tampered)
-    assert st == 401
+    assert st == 404
     st, _, body = get(port, "/", tampered)
     assert st == 200 and PARTY_MARKER not in body   # gate page, zero site bytes
 
@@ -196,7 +216,7 @@ def test_cookie_expired_no_site_bytes(srv, tmp_path):
     secret = bytes.fromhex((state_of(tmp_path) / "secret.key").read_text().strip())
     stale = server.make_token(secret, int(time.time()) - 10)
     st, _, _ = get(port, "/_assets/dummy.txt", "session=" + stale)
-    assert st == 401
+    assert st == 404
     st, _, body = get(port, "/", "session=" + stale)
     assert st == 200 and PARTY_MARKER not in body
 
@@ -287,7 +307,7 @@ def test_no_index_no_site_bytes_without_cookie(srv):
     st, _, body = get(port, "/fest40/")
     assert st == 200 and PARTY_MARKER not in body
     st, _, body = get(port, "/_assets/dummy.txt")
-    assert st == 401 and b"dummy asset" not in body
+    assert st == 404 and b"dummy asset" not in body
 
 
 def test_noindex_everywhere(srv):

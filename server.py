@@ -14,21 +14,22 @@ fail-fast exit when neither is writable (never write blind). Layout: site/
 (scrypt), secret.key (0600 HMAC secret, made on first boot).
 
 Gate is fail-closed: GET / always answers 200 with a gate page (setup form
-while unconfigured, then the login form) carrying zero site bytes -- the
-probe contract, slakttraff precedent; POST login/seed/rotate answer 503 while
-unconfigured; one register
-window (20 min from process start, only while unconfigured) sets the
-password. Every site byte requires a valid HMAC session cookie
-(30 d, HttpOnly SameSite=Lax). X-Robots-Tag: noindex,nosnippet + robots.txt
-Disallow everywhere. Honest limits: register window open at first boot until
-configured; password hash lives in the host state dir (rotate via
-POST /rotate); admin = anyone-with-the-password. Anti-casual, NOT a vault.
+while unconfigured, then the login form) carrying zero site bytes -- the probe
+contract, slakttraff precedent; POST login/seed/rotate answer 503 while
+unconfigured; one register window (20 min from process start, only while
+unconfigured) sets the password. Every site byte requires a valid HMAC session
+cookie (30 d, HttpOnly Lax); unauthenticated GET elsewhere 404s, never 401 --
+no path inventory for the quarantine probe. noindex,nosnippet + robots.txt
+Disallow everywhere. Limits: the register window is open at first boot until
+configured; the hash lives in the host state dir (POST /rotate); admin =
+anyone-with-the-password. Anti-casual, NOT a vault.
 """
 import hashlib
 import hmac
 import io
 import os
 import secrets
+import shutil
 import time
 import zipfile
 from http import HTTPStatus
@@ -236,7 +237,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render(SETUP_PAGE, base), "text/html; charset=utf-8")
             return
         if not self._session_ok():
-            self._send(HTTPStatus.UNAUTHORIZED, "login required\n")
+            # 404 not 401: a 401 here is REACHABLE to the quarantine probe,
+            # and discloses the path (staging.py forbid_path_verdict).
+            self._send(HTTPStatus.NOT_FOUND, "not found\n")
             return
         if path == "/index.html":
             self._serve_site_index()
@@ -379,9 +382,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, f"seeded {len(entries)} files\n")
 
 
-def _rmtree(p: Path):
-    import shutil
-    shutil.rmtree(p)
+_rmtree = shutil.rmtree   # short alias used at the seed swap sites
 
 
 def main():

@@ -19,9 +19,12 @@ A stdlib-only Python service (`server.py`, binds `0.0.0.0:$PORT`):
   SameSite=Lax HMAC-signed session cookie (30 days). While unconfigured,
   `POST /login`, `/seed` and `/rotate` answer `503`, and a one-time register
   window — 20 minutes from process start, only while unconfigured — accepts
-  `POST /register` (`password=...`) and stores an scrypt hash. Tampered or
-  expired cookies are `401` on every protected path. **No cookie, no site
-  byte is ever served.**
+  `POST /register` (`password=...`) and stores an scrypt hash. Unauthenticated
+  `GET` on anything but `/` and `/robots.txt` answers `404` — never `401`,
+  because to the vm106 quarantine probe a `401` on a repo file counts as
+  REACHABLE and discloses the path; every such `404` is byte-identical, so the
+  server leaks no path inventory. `POST` auth failures still answer `401`
+  (the probes never POST). **No cookie, no site byte is ever served.**
 - **Content in.** The only content channel is `POST /seed` with a valid
   session cookie and raw zip bytes (cap 20 MB, zip-slip guarded: absolute
   paths, `..`, symlinks and non-files rejected). The zip is unpacked
