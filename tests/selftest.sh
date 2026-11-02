@@ -98,6 +98,27 @@ curl -s $B/ | grep -q 'action="/fest40/login"'         && ok "emit-action-bare" 
 [ "$(code -X POST -d "password=$PW" $B/login)" = "401" ] && ok "rotate-oldpw->401" || bad "rotate-oldpw->401"
 [ "$(code -X POST -d "password=$PW2" $B/login)" = "302" ] && ok "rotate-newpw->302" || bad "rotate-newpw->302"
 
+# ---- rsvp + gäster (MC 10286.24) ---------------------------------------------
+[ "$(curl -s -H "Cookie: session=$SC" $B/gaster | grep -c "Inga anmälingar än.")" = "1" ] \
+  && ok "gaster-empty-text" || bad "gaster-empty-text"
+[ "$(code $B/gaster)" = "404" ] && [ "$(curl -s $B/gaster)" = "$(curl -s $B/hosting.yaml)" ] \
+  && ok "gaster-404-unauth" || bad "gaster-404-unauth"
+[ "$(code -X POST -H "Content-Type: application/json" -d '{"namn":"Test Testsson","vuxna":2,"barn":1,"meddelande":"Tack ja"}' $B/rsvp)" = "401" ] \
+  && ok "rsvp-nocookie->401" || bad "rsvp-nocookie->401"
+[ "$(code -X POST -H "Content-Type: application/json" -d 'not json' -H "Cookie: session=$SC" $B/rsvp)" = "400" ] \
+  && ok "rsvp-badjson->400" || bad "rsvp-badjson->400"
+[ "$(code -X POST -H "Content-Type: application/json" -d '{"namn":"Test Testsson","vuxna":2,"barn":1,"meddelande":"Tack ja"}' -H "Cookie: session=$SC" $B/rsvp)" = "200" ] \
+  && grep -q '"namn": "Test Testsson"' "$STATE/home/fest40-state/rsvp.ndjson" \
+  && ok "rsvp-append" || bad "rsvp-append"
+[ "$(code -X POST -H "Content-Type: application/json" -d '{"namn":"<script>Test Testsson</script>","vuxna":1,"barn":0,"meddelande":""}' -H "Cookie: session=$SC" $B/rsvp)" = "200" ] \
+  && ok "rsvp-escape-post->200" || bad "rsvp-escape-post->200"
+GB=$(curl -s -H "Cookie: session=$SC" "$B/g%C3%A4ster")
+echo "$GB" | grep -q '&lt;script&gt;' && ! echo "$GB" | grep -q '<script>' \
+  && ok "gaster-escape" || bad "gaster-escape"
+[ "$(code -X POST -H "Content-Type: application/json" -d '{"namn":"Testsson, \"Stora\"","vuxna":1,"barn":0,"meddelande":""}' -H "Cookie: session=$SC" $B/rsvp)" = "200" ] \
+  && curl -s -H "Cookie: session=$SC" "$B/gaster?format=csv" | grep -qF '"Testsson, ""Stora"""' \
+  && ok "gaster-csv-quoting" || bad "gaster-csv-quoting"
+
 # ---- verdict ----------------------------------------------------------------
 if [ "$FAILS" -gt 0 ]; then echo "SELFTEST FAIL ($FAILS legs)"; exit 1; fi
 echo "SELFTEST PASS"; exit 0

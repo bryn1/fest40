@@ -35,6 +35,14 @@ A stdlib-only Python service (`server.py`, binds `0.0.0.0:$PORT`):
 - **Served map.** `GET /` → `state/site/index.html` (404 "empty" until
   seeded); `GET /_assets/…` → files strictly under `state/site/_assets/`
   (resolve + prefix check, 404 otherwise). No directory listings.
+- **RSVP.** `POST /rsvp` (valid session cookie, JSON `{namn, vuxna, barn,
+  meddelande}` — namn 1–120 chars, vuxna/barn integers 0–20, meddelande
+  ≤1000 chars; body cap 8 kB → 413; invalid → 400 with a Swedish reason;
+  the body is never logged) appends ONE NDJSON line to `state/rsvp.ndjson`
+  and answers `200 {"ok":true,"mottagen":true}`. `GET /gaster` (also
+  spelled `/gäster`; same cookie, unauthenticated → the usual byte-identical
+  404) lists stored RSVPs HTML-escaped — `?format=csv` gives quoted CSV;
+  empty → "Inga anmälingar än."
 - **Invisible to search.** `X-Robots-Tag: noindex,nosnippet` on every response
   plus a `robots.txt` with `Disallow: /`.
 
@@ -47,7 +55,8 @@ and never sets `$XDG_STATE_HOME`. `./state/` is the fallback only when HOME
 is unset or unwritable (plain local runs); if neither is writable the
 service exits with a clear error instead of writing blind. Layout: `site/`
 (served content), `password.hash` (scrypt), `secret.key` (0600, generated on
-first boot). The repo is CODE ONLY — wedding bytes never enter git.
+first boot), `rsvp.ndjson` (guest replies, one JSON row per line). The repo
+is CODE ONLY — wedding bytes never enter git.
 
 ## Admin
 

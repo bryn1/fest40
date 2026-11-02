@@ -21,7 +21,9 @@ need a valid HMAC cookie (30 d, HttpOnly Lax); unauthenticated GET elsewhere
 404s, never 401 -- no path inventory for the quarantine probe. Always
 noindex,nosnippet + robots Disallow. Limits: window open at first boot until
 configured; hash lives in the host state dir (POST /rotate); admin =
-anyone-with-the-password. Anti-casual, NOT a vault.
+anyone-with-the-password. Anti-casual, NOT a vault. RSVP (logic in rsvp.py):
+POST /rsvp (cookie) appends NDJSON rows to <state>/rsvp.ndjson; GET
+/gaster|/gäster (cookie) lists them escaped, ?format=csv for CSV.
 """
 import hashlib
 import hmac
@@ -36,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from gate_pages import LOGIN_PAGE, SETUP_PAGE, render
+import rsvp
 
 PREFIX = "/fest40"
 HASH_NAME = "password.hash"
@@ -134,9 +137,7 @@ def write_password(base: Path, pw: str) -> None:
 def strip_prefix(path: str) -> str:
     if path == PREFIX:
         return "/"
-    if path.startswith(PREFIX + "/"):
-        return path[len(PREFIX):]
-    return path
+    return path[len(PREFIX):] if path.startswith(PREFIX + "/") else path
 
 
 def app_base(path: str = "") -> str:
@@ -241,6 +242,8 @@ class Handler(BaseHTTPRequestHandler):
             # probe (staging.py forbid_path_verdict) and discloses the path.
             self._send(HTTPStatus.NOT_FOUND, "not found\n")
             return
+        if rsvp.handle_get(self, path, urlparse(self.path).query, state_base()):
+            return
         if path == "/index.html":
             self._serve_site_index()
         elif path.startswith("/_assets/"):
@@ -263,12 +266,7 @@ class Handler(BaseHTTPRequestHandler):
             if configured or not self._register_open():
                 self._send(HTTPStatus.CONFLICT, "register closed\n")
                 return
-            pw = self._form_pw(body)
-            if not pw or len(pw) < MIN_PW_LEN:
-                self._send(HTTPStatus.BAD_REQUEST, f"password too short\n")
-                return
-            write_password(state_base(), pw)
-            self._send(200, "configured\n")
+            self._pw_from_form(body, "configured\n")
             return
         if path == "/login":
             if not configured:
@@ -292,12 +290,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/seed":
             self._seed(body if isinstance(body, bytes) else b"")
         elif path == "/rotate":
-            pw = self._form_pw(body)
-            if not pw or len(pw) < MIN_PW_LEN:
-                self._send(HTTPStatus.BAD_REQUEST, "password too short\n")
-                return
-            write_password(state_base(), pw)
-            self._send(200, "rotated\n")
+            self._pw_from_form(body, "rotated\n")
+        elif path == "/rsvp":
+            rsvp.handle_post(self, body if isinstance(body, bytes) else b"", state_base())
         else:
             self._send(HTTPStatus.NOT_FOUND, "not found\n")
 
@@ -312,6 +307,15 @@ class Handler(BaseHTTPRequestHandler):
             return None
         vals = parse_qs(body.decode("utf-8", "replace")).get("password")
         return vals[0] if vals else None
+
+    def _pw_from_form(self, body, ok_msg):
+        """register+rotate share this: parse, length-check, write, answer."""
+        pw = self._form_pw(body)
+        if not pw or len(pw) < MIN_PW_LEN:
+            self._send(HTTPStatus.BAD_REQUEST, "password too short\n")
+            return
+        write_password(state_base(), pw)
+        self._send(200, ok_msg)
 
     def _serve_site_index(self):
         idx = state_base() / SITE_DIR / "index.html"
@@ -357,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
         old = base / (SITE_DIR + ".old")
         try:
             if staging.exists():
-                _rmtree(staging)
+                shutil.rmtree(staging)
             staging.mkdir(parents=True)
             for info, rel in entries:
                 target = staging / rel
@@ -367,22 +371,19 @@ class Handler(BaseHTTPRequestHandler):
                         dst.write(chunk)
             if site.exists():
                 if old.exists():
-                    _rmtree(old)
+                    shutil.rmtree(old)
                 site.rename(old)
             staging.rename(site)
             if old.exists():
-                _rmtree(old)
+                shutil.rmtree(old)
         except (OSError, zipfile.BadZipFile, RuntimeError):
             if staging.exists():
-                _rmtree(staging)
+                shutil.rmtree(staging)
             if not site.exists() and old.exists():     # restore the wipe-then-fail case
                 old.rename(site)
             self._send(HTTPStatus.INTERNAL_SERVER_ERROR, "seed failed\n")
             return
         self._send(200, f"seeded {len(entries)} files\n")
-
-
-_rmtree = shutil.rmtree   # short alias used at the seed swap sites
 
 
 def main():
