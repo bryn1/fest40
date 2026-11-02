@@ -13,9 +13,12 @@ fail-fast exit when neither is writable (never write blind). Layout: site/
 (served content, enters ONLY via POST /seed, never committed), password.hash
 (scrypt), secret.key (0600 HMAC secret, made on first boot).
 
-Gate is fail-closed: unconfigured -> site/seed/rotate 503; one register
+Gate is fail-closed: GET / always answers 200 with a gate page (setup form
+while unconfigured, then the login form) carrying zero site bytes -- the
+probe contract, slakttraff precedent; POST login/seed/rotate answer 503 while
+unconfigured; one register
 window (20 min from process start, only while unconfigured) sets the
-password. Configured -> every site byte requires a valid HMAC session cookie
+password. Every site byte requires a valid HMAC session cookie
 (30 d, HttpOnly SameSite=Lax). X-Robots-Tag: noindex,nosnippet + robots.txt
 Disallow everywhere. Honest limits: register window open at first boot until
 configured; password hash lives in the host state dir (rotate via
@@ -33,6 +36,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from gate_pages import LOGIN_PAGE, SETUP_PAGE, render
+
 PREFIX = "/fest40"
 HASH_NAME = "password.hash"
 SECRET_NAME = "secret.key"
@@ -44,16 +49,6 @@ MIN_PW_LEN = 10
 START_TIME = time.time()
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
 
-LOGIN_FORM = (
-    "<!doctype html><meta charset=utf-8>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>fest40</title><meta name=robots content=noindex>"
-    "<body style='font-family:sans-serif;max-width:24em;margin:4em auto'>"
-    "<h1>fest40</h1><p>Denna sida kräver lösenord.</p>"
-    "<form method=post action='{base}/login'>"
-    "<input type=password name=password placeholder='Lösenord' required>"
-    "<button type=submit>Logga in</button></form></body>"
-)
 ROBOTS_TXT = "User-agent: *\nDisallow: /\n"
 
 
@@ -216,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _pw_form(self, base, status=HTTPStatus.UNAUTHORIZED):
-        self._send(status, LOGIN_FORM.format(base=base), "text/html; charset=utf-8")
+        self._send(status, render(LOGIN_PAGE, base), "text/html; charset=utf-8")
 
     # -- routes -----------------------------------------------------------
     def do_GET(self):
@@ -225,21 +220,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, ROBOTS_TXT, "text/plain; charset=utf-8")
             return
         path, base = strip_prefix(raw), app_base(raw)
+        if path == "/":
+            # The gate page answers 200 ALWAYS (probes demand 200 + a sized
+            # body on the product path, slakttraff precedent) -- but it
+            # carries ZERO site bytes; those need the cookie.
+            if read_password(state_base()) is None:
+                self._send(200, render(SETUP_PAGE, base), "text/html; charset=utf-8")
+            elif not self._session_ok():
+                self._pw_form(base, status=HTTPStatus.OK)
+            else:
+                self._serve_site_index()
+            return
         if path == "/register" and self._register_open():
-            self._send(200, "<!doctype html><meta charset=utf-8><title>fest40 setup</title>"
-                       "<meta name=robots content=noindex><body><h1>fest40 setup</h1>"
-                       "<form method=post action='" + base + "/register'>"
-                       "<input type=password name=password placeholder='Nytt losenord' required>"
-                       "<button>Installera</button></form></body>",
-                       "text/html; charset=utf-8")
+            # same bytes as the unconfigured gate page -- form bootstrap only
+            self._send(200, render(SETUP_PAGE, base), "text/html; charset=utf-8")
             return
         if not self._session_ok():
-            if read_password(state_base()) is None:
-                self._send(HTTPStatus.SERVICE_UNAVAILABLE, "not configured\n")
-            else:
-                self._pw_form(base)
+            self._send(HTTPStatus.UNAUTHORIZED, "login required\n")
             return
-        if path in ("/", "/index.html"):
+        if path == "/index.html":
             self._serve_site_index()
         elif path.startswith("/_assets/"):
             self._serve_asset(path)

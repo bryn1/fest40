@@ -78,7 +78,7 @@ def cookie_from(headers):
 def good_zip():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("index.html", "<h1>dummy party</h1>")
+        z.writestr("index.html", b"<h1>dummy party " + PARTY_MARKER + b"</h1>")
         z.writestr("_assets/dummy.txt", "dummy asset bytes")
     return buf.getvalue()
 
@@ -91,17 +91,42 @@ def make_zip(entries):
     return buf.getvalue()
 
 
-# -- the unconfigured gate --------------------------------------------------
+# -- the gate page (always-200 front, zero site bytes) -----------------------
 
-def test_unconfigured_site_503(srv):
-    st, _, body = get(srv.server_address[1], "/")
-    assert st == 503
-    assert b"not configured" in body
+PARTY_MARKER = b"PARTY-MARKER-9f2c"   # planted in the dummy zip; MUST never
+                                      # appear on any gate page
+
+def test_unconfigured_root_200_setup_page(srv):
+    st, hdrs, body = get(srv.server_address[1], "/")
+    assert st == 200
+    assert "under uppsättning".encode() in body
+    assert b"/register" in body
+    assert len(body) >= 256 and b"dummy party" not in body
+    assert hdrs.get("X-Robots-Tag") == "noindex,nosnippet"
 
 
-def test_unconfigured_asset_503(srv):
+def test_unconfigured_asset_401(srv):
     st, _, _ = get(srv.server_address[1], "/_assets/whatever.txt")
-    assert st == 503
+    assert st == 401   # no cookie, no byte -- the /-only 200 exception is exact
+
+
+def test_gate_pages_clear_the_real_size_floor():
+    """staging.py:65-66 -> MIN_BYTES_FLOOR = 256, and the live probe fails any
+    product-path body under it. Both gate pages must clear it by 2x, and the
+    floor value is read from the reconciler source, not hardcoded blind."""
+    import re
+    src = Path("/home/claudecode/agent-town/infra/vm106/repo-visibility-hosting/staging.py")
+    floor = 256
+    if src.is_file():                      # fleet source when present
+        found = re.search(r"^MIN_BYTES_FLOOR\s*=\s*(\d+)", src.read_text(), re.M)
+        assert found, "MIN_BYTES_FLOOR no longer readable in staging.py -- re-check the bar"
+        floor = int(found.group(1))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import gate_pages
+    for name in ("LOGIN_PAGE", "SETUP_PAGE"):
+        body = gate_pages.render(getattr(gate_pages, name), "/fest40").encode()
+        assert len(body) >= 2 * floor, f"{name} is {len(body)}B, floor is {floor}B"
+        assert "Alexander".encode() in body and b"<form" in body
 
 
 def test_register_then_configured(srv, tmp_path):
@@ -109,11 +134,12 @@ def test_register_then_configured(srv, tmp_path):
     st, _, _ = register(port)
     assert st == 200
     assert (state_of(tmp_path) / "password.hash").is_file()
-    # configured now: / is a 401 login form, not 503, and NOT the site
+    # configured now: / is a 200 LOGIN page (probe contract), never the site
     st, hdrs, body = get(port, "/")
-    assert st == 401
-    assert b"password" in body.lower()
-    assert b"dummy party" not in body
+    assert st == 200
+    assert "Lösenord".encode() in body and b"/login" in body
+    assert len(body) >= 256 and b"dummy party" not in body
+    assert hdrs.get("X-Robots-Tag") == "noindex,nosnippet"
     # second register refused once configured
     st, _, _ = register(port)
     assert st == 409
@@ -124,8 +150,9 @@ def test_register_window_expired(srv, monkeypatch):
     monkeypatch.setattr(server, "START_TIME", time.time() - server.REGISTER_WINDOW_S - 1)
     st, _, _ = register(port)
     assert st == 409
-    # and still unconfigured -> site stays 503
-    assert get(port, "/")[0] == 503
+    # still unconfigured -> the setup page keeps answering (nothing to show yet)
+    st, _, body = get(port, "/")
+    assert st == 200 and "under uppsättning".encode() in body and PARTY_MARKER not in body
 
 
 # -- the login gate ---------------------------------------------------------
@@ -151,24 +178,27 @@ def test_login_right_pw_sets_cookie(srv):
     assert st == 404 and b"empty" in body
 
 
-def test_cookie_tamper_401(srv):
-    port = srv.server_address[1]
-    assert register(port)[0] == 200
-    cookie = cookie_from(login(port)[1])
+def test_cookie_tamper_no_site_bytes(srv):
+    """A tampered cookie opens NOTHING: /_assets -> 401, / -> 200 gate page
+    without a single site byte (the marker)."""
+    port, cookie = _seeded(srv)
     sig, _, last = cookie.rpartition(".")
     tampered = cookie[:-1] + ("0" if cookie[-1] != "0" else "1")
     assert tampered != cookie
-    st, _, _ = get(port, "/", tampered)
+    st, _, _ = get(port, "/_assets/dummy.txt", tampered)
     assert st == 401
+    st, _, body = get(port, "/", tampered)
+    assert st == 200 and PARTY_MARKER not in body   # gate page, zero site bytes
 
 
-def test_cookie_expired_401(srv, tmp_path):
-    port = srv.server_address[1]
-    assert register(port)[0] == 200
+def test_cookie_expired_no_site_bytes(srv, tmp_path):
+    port, _ = _seeded(srv)
     secret = bytes.fromhex((state_of(tmp_path) / "secret.key").read_text().strip())
     stale = server.make_token(secret, int(time.time()) - 10)
-    st, _, _ = get(port, "/", "session=" + stale)
+    st, _, _ = get(port, "/_assets/dummy.txt", "session=" + stale)
     assert st == 401
+    st, _, body = get(port, "/", "session=" + stale)
+    assert st == 200 and PARTY_MARKER not in body
 
 
 # -- the seed channel -------------------------------------------------------
@@ -189,7 +219,7 @@ def test_seed_and_serve(srv):
                    headers={"Content-Type": "application/zip", "Cookie": cookie})
     assert st == 200
     st, hdrs, body = get(port, "/", cookie)
-    assert st == 200 and b"dummy party" in body
+    assert st == 200 and PARTY_MARKER in body      # the real page opens WITH cookie
     assert "noindex" in hdrs["X-Robots-Tag"]
     st, _, body = get(port, "/_assets/dummy.txt", cookie)
     assert st == 200 and body == b"dummy asset bytes"
@@ -249,10 +279,13 @@ def test_traversal_asset_404(srv):
 
 
 def test_no_index_no_site_bytes_without_cookie(srv):
+    """The law: seeded + NO cookie -> / answers 200 (probe contract) but is
+    the gate page: the planted marker appears on NO unauthenticated body."""
     port, _ = _seeded(srv)
     st, _, body = get(port, "/")
-    assert st == 401
-    assert b"dummy party" not in body
+    assert st == 200 and PARTY_MARKER not in body
+    st, _, body = get(port, "/fest40/")
+    assert st == 200 and PARTY_MARKER not in body
     st, _, body = get(port, "/_assets/dummy.txt")
     assert st == 401 and b"dummy asset" not in body
 
@@ -299,8 +332,8 @@ def test_prefix_both_ways(srv):
     assert hdrs.get("Location") is None
     st, _, body = get(port, "/fest40/_assets/dummy.txt", cookie)
     assert st == 200 and body == b"dummy asset bytes"
-    st, _, _ = get(port, "/fest40/")          # no cookie under prefix: still gated
-    assert st == 401
+    st, _, body = get(port, "/fest40/")          # no cookie under prefix: gate page
+    assert st == 200 and PARTY_MARKER not in body  # 200 form, zero site bytes
     # login under the prefix redirects back into the prefix
     st, hdrs, _ = login(port, PW, path="/fest40/login")
     assert st == 302 and hdrs.get("Location") == "/fest40/"

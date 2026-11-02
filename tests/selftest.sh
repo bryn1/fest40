@@ -29,26 +29,34 @@ for _ in $(seq 50); do
 done
 B="http://127.0.0.1:$PORT"
 PW="selftest-kana-2026"; PW2="selftest-nyckel-2026"
+MARKER="PARTY-MARKER-9f2c"
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+nbytes() { curl -s "$@" | wc -c | tr -d ' '; }
 
-[ "$(code $B/)" = "503" ]                          && ok "unconfigured-/->503"        || bad "unconfigured-/->503"
-[ "$(code $B/_assets/x)" = "503" ]                 && ok "unconfigured-asset->503"    || bad "unconfigured-asset->503"
+# the product path ALWAYS answers 200 with a body over the probe floor
+# (staging.py MIN_BYTES_FLOOR=256); site bytes always need the cookie.
+[ "$(code $B/)" = "200" ]                            && ok "unconfigured-/->200"        || bad "unconfigured-/->200"
+curl -s $B/ | grep -q "under upps"                  && ok "unconfigured-/->setup-page" || bad "unconfigured-/->setup-page"
+[ "$(nbytes $B/)" -ge 256 ]                          && ok "setup-page-over-floor"      || bad "setup-page-over-floor"
+[ "$(code $B/_assets/x)" = "401" ]                   && ok "unconfigured-asset->401"    || bad "unconfigured-asset->401"
 [ "$(code -X POST -d "password=$PW" $B/register)" = "200" ] && ok "register->200"     || bad "register->200"
 [ "$(code -X POST -d "password=$PW" $B/register)" = "409" ] && ok "register-again->409" || bad "register-again->409"
-[ "$(code $B/)" = "401" ]                          && ok "configured-noauth->401"     || bad "configured-noauth->401"
+[ "$(code $B/)" = "200" ]                            && ok "configured-/->200"          || bad "configured-/->200"
+curl -s $B/ | grep -q "Lösenord"                    && ok "configured-/->login-page"   || bad "configured-/->login-page"
+[ "$(nbytes $B/)" -ge 256 ]                          && ok "login-page-over-floor"      || bad "login-page-over-floor"
 [ "$(code -X POST -d "password=wrongpassword" $B/login)" = "401" ] && ok "login-wrong->401" || bad "login-wrong->401"
 SC=$(curl -s -D - -o /dev/null -X POST -d "password=$PW" $B/login | tr -d '\r' | grep -i '^set-cookie:' | sed 's/.*session=//;s/;.*//')
 [ -n "$SC" ]                                       && ok "login-right->set-cookie"    || bad "login-right->set-cookie"
 TAMPER="session=$(echo "$SC" | sed 's/.$/X/')"
-[ "$(code -H "Cookie: $TAMPER" $B/)" = "401" ]     && ok "cookie-tamper->401"         || bad "cookie-tamper->401"
+[ "$(code -H "Cookie: $TAMPER" $B/_assets/whatever.txt)" = "401" ] && ok "cookie-tamper-asset->401" || bad "cookie-tamper-asset->401"
 [ "$(code -X POST --data-binary @/dev/null $B/seed)" = "401" ] && ok "seed-nocookie->401" || bad "seed-nocookie->401"
 
 Z="$STATE/dummy.zip"
-"$PY" - "$Z" <<'EOF'
+"$PY" - "$Z" "$MARKER" <<'EOF'
 import io, sys, zipfile
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, "w") as z:
-    z.writestr("index.html", "<h1>dummy party</h1>")
+    z.writestr("index.html", f"<h1>dummy party {sys.argv[2]}</h1>")
     z.writestr("_assets/dummy.txt", "dummy asset bytes")
 open(sys.argv[1], "wb").write(buf.getvalue())
 EOF
@@ -64,15 +72,18 @@ EOF
 [ ! -e "$STATE/home/evil.txt" ]                    && ok "zipslip-no-write"           || bad "zipslip-no-write"
 [ "$(code -X POST --data-binary @$Z -H "Cookie: session=$SC" $B/seed)" = "200" ] && ok "seed-cookie->200" || bad "seed-cookie->200"
 BODY=$(curl -s -H "Cookie: session=$SC" $B/)
-echo "$BODY" | grep -q "dummy party"               && ok "served-index-content"       || bad "served-index-content"
+echo "$BODY" | grep -q "$MARKER"                   && ok "served-index-content"       || bad "served-index-content"
+[ "$(curl -s $B/ | grep -c "$MARKER")" = "0" ]     && ok "no-cookie-no-site-bytes"    || bad "no-cookie-no-site-bytes"
+[ "$(code $B/)" = "200" ]                          && ok "no-cookie-/->200-gate"      || bad "no-cookie-/->200-gate"
 [ "$(curl -s -H "Cookie: session=$SC" $B/_assets/dummy.txt)" = "dummy asset bytes" ] && ok "served-asset" || bad "served-asset"
-[ "$(code $B/)" = "401" ]                          && ok "no-cookie-no-site-bytes"    || bad "no-cookie-no-site-bytes"
 [ "$(code -H "Cookie: session=$SC" $B/_assets/../../etc/passwd)" = "404" ] && ok "asset-traversal->404" || bad "asset-traversal->404"
 curl -sI $B/ | grep -qi 'x-robots-tag: noindex,nosnippet' && ok "noindex-header" || bad "noindex-header"
 curl -s $B/robots.txt | grep -q 'Disallow: /'      && ok "robots-disallow"            || bad "robots-disallow"
 # prefix both ways
 [ "$(code -H "Cookie: session=$SC" $B/fest40/)" = "200" ] && ok "prefix-index->200" || bad "prefix-index->200"
-[ "$(code $B/fest40/)" = "401" ]                   && ok "prefix-noauth->401"         || bad "prefix-noauth->401"
+[ "$(code $B/fest40/)" = "200" ] && [ "$(curl -s $B/fest40/ | grep -c "$MARKER")" = "0" ] \
+  && ok "prefix-noauth-200-gate-no-site-bytes" || bad "prefix-noauth-200-gate-no-site-bytes"
+[ "$(code $B/fest40/_assets/dummy.txt)" = "401" ] && ok "prefix-noauth-asset->401" || bad "prefix-noauth-asset->401"
 LOC=$(curl -s -D - -o /dev/null -X POST -d "password=$PW" $B/fest40/login | tr -d '\r' | grep -i '^location:' | sed 's/.*: //')
 [ "$LOC" = "/fest40/" ]                            && ok "prefix-login-redirect"      || bad "prefix-login-redirect"
 # rotate: old pw must die, new pw must work

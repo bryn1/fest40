@@ -9,14 +9,19 @@ both prefixed and bare paths).
 
 A stdlib-only Python service (`server.py`, binds `0.0.0.0:$PORT`):
 
-- **Gate (fail-closed).** Until a password is configured every site request is
-  `503 not configured`. One register window — 20 minutes from process start,
-  and only while unconfigured — accepts `POST /register` (`password=...`) and
-  stores an scrypt hash. Once configured, `GET /` without a valid session
-  cookie is a `401` password form; `POST /login` verifies with a
-  constant-time compare and sets an HttpOnly SameSite=Lax HMAC-signed session
-  cookie (30 days). Tampered or expired cookies are `401`. **No cookie, no
-  site byte is ever served.**
+- **Gate (fail-closed).** `GET /` ALWAYS answers `200` with a gate page — the
+  setup form while unconfigured ("Sidan är under uppsättning"), then the
+  password form once a password exists. That page carries ZERO site bytes:
+  it is the fleet-accepted shape (the vm106 staging gate and the live probe
+  both demand a 200 with a sized body on the product path — the slakttraff
+  precedent), and the real content still only opens behind the cookie.
+  `POST /login` verifies with a constant-time compare and sets an HttpOnly
+  SameSite=Lax HMAC-signed session cookie (30 days). While unconfigured,
+  `POST /login`, `/seed` and `/rotate` answer `503`, and a one-time register
+  window — 20 minutes from process start, only while unconfigured — accepts
+  `POST /register` (`password=...`) and stores an scrypt hash. Tampered or
+  expired cookies are `401` on every protected path. **No cookie, no site
+  byte is ever served.**
 - **Content in.** The only content channel is `POST /seed` with a valid
   session cookie and raw zip bytes (cap 20 MB, zip-slip guarded: absolute
   paths, `..`, symlinks and non-files rejected). The zip is unpacked
