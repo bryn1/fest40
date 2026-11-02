@@ -58,12 +58,10 @@ ROBOTS_TXT = "User-agent: *\nDisallow: /\n"
 
 
 def state_base() -> Path:
-    """Service state dir per the vm106 unit contract: $HOME/fest40-state
-    (the unit sets HOME=%S/vm106-app-fest40, a writable StateDirectory, and
-    NEVER sets $XDG_STATE_HOME). Fallback ./state/ only when HOME is
-    unset/unwritable (local runs). Fail fast when neither is writable --
-    never write blind (MC 10286.22: the first deploy died Errno 30 writing
-    into the read-only mirror, because this read only $XDG_STATE_HOME)."""
+    """Service state dir per the vm106 unit contract: $HOME/fest40-state (the
+    unit sets HOME=%S/vm106-app-fest40, a writable StateDirectory, and never
+    $XDG_STATE_HOME). ./state/ is the fallback only for local runs. Fail fast
+    when neither is writable: never write blind into the strict mirror."""
     cands = []
     home = os.environ.get("HOME")
     if home:
