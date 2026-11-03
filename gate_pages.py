@@ -24,8 +24,11 @@ GATE_STYLE = (
     "form{display:flex;gap:.5rem;margin-top:1.4rem;flex-wrap:wrap}"
     "input{flex:1 1 12rem;padding:.6rem .75rem;font:inherit;border:1px solid;"
     "border-radius:.4rem;background:transparent;color:currentColor}"
-    "button{padding:.6rem 1.1rem;font:inherit;border:1px solid;border-radius:.4rem;"
-    "cursor:pointer;background:currentColor;color:transparent}"
+    # button paint is EXPLICIT: a currentColor background resolves to the
+    # button's own color, so the old transparent-text rule painted background
+    # AND label transparent -- fully invisible button (MC 10286.26).
+    "button{padding:.6rem 1.1rem;font:inherit;border:1px solid #1c1a17;"
+    "border-radius:.4rem;cursor:pointer;background:#1c1a17;color:#faf6ef}"
     "small{display:block;margin-top:1.6rem;opacity:.6}"
     "</style>"
 )

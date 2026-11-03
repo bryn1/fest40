@@ -149,6 +149,25 @@ def test_gate_pages_clear_the_real_size_floor():
         assert "Alexander".encode() in body and b"<form" in body
 
 
+def test_login_button_paints_visible_scheme(srv):
+    """Owner ruling 2026-11-03: the Logga in button must actually be seen.
+    The old rule was background:currentColor + color:transparent -- self-
+    circular: currentColor resolves to the button's OWN color, so background
+    AND text were transparent (invisible 105x47 hitbox on the live page).
+    No currentColor may reach the button rule; the label must be served."""
+    port = srv.server_address[1]
+    assert register(port)[0] == 200
+    st, _, body = get(port, "/")                     # configured: login gate
+    assert st == 200
+    assert b'<button type="submit">Logga in</button>' in body
+    css = body[body.index(b"<style>"):body.index(b"</style>")]
+    assert b"background:currentColor" not in css     # never regress the served CSS
+    rule = css[css.index(b"button{"):css.index(b"}", css.index(b"button{"))]
+    assert b"currentColor" not in rule               # explicit scheme, whole rule
+    assert b"background:#1c1a17" in rule and b"color:#faf6ef" in rule
+    assert b"border:1px solid #1c1a17" in rule
+
+
 def test_register_then_configured(srv, tmp_path):
     port = srv.server_address[1]
     st, _, _ = register(port)
